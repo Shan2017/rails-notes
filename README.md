@@ -66,7 +66,7 @@ resources :products do
     post :on_offer
   end
 ```
-  # 或
+ 或
 ```
   get  :sold, :on => :collection
   post :on_offer, :on => :collection
@@ -82,7 +82,7 @@ resources :products do
     get :sold
   end
 ```
-  # 或
+ 或
 ```
   get :sold, :on => :member
 ```
@@ -341,4 +341,179 @@ $(document).on("turbolinks:load", function(){
 
 ⚠ 总之，如果你碰到 js 灵异现象(贴上来的js code 换页回来后不执行，但是重新整理就没问题。或是跳页回来重复执行了两次等等，可以试试看拆掉 Turbolinks：把 Gemfile、applicatio.js 和 layout head 里面相关的 Turbolink 代码拿掉即可，就可以直接绕过这个大坑。
 
-## 6. 
+## 6. 性能
+
+- ### N+1 queries
+
+N+1 queries是数据库效能头号杀手。ActiveRecord的Association功能很方便，所以很容易就写出以下的程式：
+```
+# model
+class User < ActieRecord::Base
+  has_one :car
+end
+
+class Car < ApplicationRecord
+  belongs_to :user
+end
+
+# your controller
+def index
+  @users = User.page(params[:page])
+end
+
+# view
+<% @users.each do |user| %>
+ <%= user.car.name %>
+<% end %>
+```
+我们在View中读取user.car.name的值。但是这样的程式导致了N+1 queries问题，假设User有10笔，这程式会产生出11笔Queries，一笔是查User，另外10笔是一笔一笔去查Car，严重拖慢效能。
+```
+SELECT * FROM `users` LIMIT 10 OFFSET 0
+SELECT * FROM `cars` WHERE (`cars`.`user_id` = 1)
+SELECT * FROM `cars` WHERE (`cars`.`user_id` = 2)
+SELECT * FROM `cars` WHERE (`cars`.`user_id` = 3)
+...
+...
+...
+SELECT * FROM `cars` WHERE (`cars`.`user_id` = 10)
+```
+解决方法，加上includes：
+```
+# your controller
+def index
+  @users = User.includes(:car).page(params[:page])
+end
+```
+如此SQL query就只有两个，只用一个就捞出所有Cars资料。
+```
+SELECT * FROM `users` LIMIT 10 OFFSET 0
+SELECT * FROM `cars` WHERE (`cars`.`user_id` IN('1','2','3','4','5','6','7','8','9','10'))
+```
+如果user还有parts零件的关联资料想要一起捞出来，includes也支援hash写法：`@users = User.includes(:car => :parts ).page(params[:page])`
+
+- ### 计数快取 Counter Cache
+
+如果需要常计算has_many的Model有多少笔资料，例如显示文章列表时，也要显示每篇有多少留言回复。
+```
+<% @topics.each do |topic| %>
+  主题：<%= topic.subject %>
+  回复数：<%= topic.posts.size %>
+<% end %>
+```
+这时候Rails会产生一笔笔的SQL count查询：
+```
+SELECT * FROM `posts` LIMIT 5 OFFSET 0
+SELECT count(*) AS count_all FROM `posts` WHERE (`posts`.topic_id = 1 )
+SELECT count(*) AS count_all FROM `posts` WHERE (`posts`.topic_id = 2 )
+SELECT count(*) AS count_all FROM `posts` WHERE (`posts`.topic_id = 3 )
+SELECT count(*) AS count_all FROM `posts` WHERE (`posts`.topic_id = 4 )
+SELECT count(*) AS count_all FROM `posts` WHERE (`posts`.topic_id = 5 )
+```
+Counter cache功能可以把这个数字存进数据库，不再需要一笔笔的SQL count查询，并且会在Post数量有更新的时候，自动更新这个值。
+
+首先，你必须要在Topic Model新增一个字段叫做posts_count，依照惯例是_count结尾，型别是integer，有默认值0。
+```
+rails g migration add_posts_count_to_topic
+```
+编辑Migration：
+```
+class AddPostsCountToTopic < ActiveRecord::Migration[5.1]
+  def change
+    add_column :topics, :posts_count, :integer, :default => 0
+
+    Topic.pluck(:id).each do |i|
+      Topic.reset_counters(i, :posts) # 全部重算一次
+    end
+  end
+end
+```
+编辑Models，加入:counter_cache => true：
+```
+class Topic < ApplicationRecord
+  has_many :posts
+end
+
+class Posts < ApplicationRecord
+  belongs_to :topic, :counter_cache => true
+end
+```
+
+这样同样的@topic.posts.size程式，就会自动变成使用@topic.posts_count，而不会用SQL count查询一次。
+
+- ### Batch finding
+
+如果需要捞出全部的资料做处理，强烈建议最好不要用all方法，因为这样会把全部的资料一次放进内存中，如果资料有成千上万笔的话，效能就坠毁了。解决方法是分次捞，每次几捞几百或几千笔。虽然自己写就可以了，但是Rails提供了Batch finding方法可以很简单的使用：
+```
+Article.find_each do |a|
+  # iterate over all articles, in chunks of 1000 (the default)
+end
+
+Article.find_each( :batch_size => 100 ) do |a|
+  # iterate over published articles in chunks of 100
+end
+```
+或是
+```
+Article.find_in_batches do |articles|
+  articles.each do |a|
+    # articles is array of size 1000
+  end
+end
+
+Article.find_in_batches( :batch_size => 100 ) do |articles|
+  articles.each do |a|
+    # iterate over all articles in chunks of 100
+  end
+end
+```
+
+## 7. 快取
+
+- ### View 快取
+
+Fragment caching可以只快取HTML中的一小段元素，我们可以自由选择要快取的区块，例如侧栏或是选单等等，让我们有最大的弹性。也因为这种快取发生在View中，所以我们必须把快取程式放进View中，用cache包起来要快取的Template：
+```
+<% cache [@events] do %>
+  All events:
+	<% @events.each do |event| %>
+		<%= event.name %>
+	<% end %>
+<% end %>
+```
+cache的参数是拿来当作快取Key的物件或名称，我们也可以多加一些名称来识别。Rails会自动将ActiveRecord物件的最后更新时间、你给的客制名称，加上Template的内容杂凑自动产生出一个快取Key。
+```
+<% cache [:popular, @events] do %>
+  All popular events:
+<% end %>
+```
+注意是因为有ActiveRecord的Lazy Load特性，所以写在Controller Action里的ActiveRecord Query才不会立即送出，而是到真正使用的时候(也就是在Fragment cache范围里)才会实际发出SQL查询。如果真没有办法利用到Lazy Load的特性，例如不是ActiveRecord的情况，则可以手动使用fragment_exist?方法在Action里面检查是不是已经有快取，有的话就不要执行，例如：
+```
+def show
+  @event = Event.find(params[:id])
+  unless fragment_exist?(@event)
+    @result = SomeExpenseQuery.execute(@event)
+  end
+end
+
+# show.html.erb
+
+<% cache @event do %>
+  <%= @event.name %>
+  <%= @result %>
+<% end %>
+```
+
+- ### Russian Doll快取策略
+
+上述cache [:list, @events]的范例中，如果其中一笔资料有更新，会造成整组@events快取资料都要重新计算，这一点很没效率。Rails支援nested的叠套方式让我们可以重用(reuse)其中的快取资料，例如：
+```
+<% cache [:list, @events] %>
+	All events:
+	<% @events.each do |event| %>
+		<% cache event do %>
+			<%= event.name %>
+		<% end %>
+	<% end %>
+<% end %>
+```
+如果其中一笔event有更新，最外围的快取也会一起更新，但是它不会笨笨的重算每一个小event的快取，只会重算有更新的event而已，其他event则会沿用已经有的快取资料。
