@@ -8,8 +8,20 @@ Rails Notes是学习Rails框架的时候，收集的一些知识和片段资料�
 
 参考资料：
 - [《Ruby on Rails 实战圣经》](https://ihower.tw/rails/index-cn.html)
+- [《Ruby on Rails 指南 (v5.1.1)》](https://ruby-china.github.io/rails-guides/)
 
 ## 1. 路由
+
+- ### routes.rb
+
+在routes.rb里面，越上面的路由规则越优先。
+
+get 'meetings/:id', :to => 'events#show'
+post 'meetings', :to => 'events#create'
+这里的events#show表示指向events controller的show action。通常会简写成：
+
+get 'meetings/:id' => 'events#show'
+其中有冒号:id的部分，会被转成一个参数params[:id]传进Controller里。
 
 - ### 重定向
 
@@ -136,6 +148,19 @@ end
 
 ## 2. 控制器
 
+- ### Controller 命名
+
+Rails 控制器的命名约定是，最后一个单词使用复数形式，但也有例外，比如 ApplicationController。
+
+假设有一个stores controller的话：
+
+档名 app/controllers/stores_controller.rb
+类别名称 StoresController
+如果需要将controllers档案做分类，这时候可以使用Module，将档案放在子目录下，例如后台专用的controllers：
+
+档名 app/controllers/admin/stores_controller.rb
+类别名称 Admin::StoresController
+
 - ### rescue_from
 
 rescue_from可以在Controller中宣告救回特定的例外，改用你指定的方法处理，例如：
@@ -188,7 +213,78 @@ class PostsController < ApplicationController
 end
 ```
 
+- ### 日志记录
+
+`Rails.logger.debug("event: #{@event.inspect}")`
+
+- ### 散列和数组参数
+
+params 散列不局限于只能使用一维键值对，其中可以包含数组和嵌套的散列。若想发送数组，要在键名后加上一对空方括号（[]）：
+
+GET /clients?ids[]=1&ids[]=2&ids[]=3
+“[”和“]”这两个符号不允许出现在 URL 中，所以上面的地址会被编码成 /clients?ids%5b%5d=1&ids%5b%5d=2&ids%5b%5d=3。多数情况下，无需你费心，浏览器会代为编码，接收到这样的请求后，Rails 也会自动解码。如果你要手动向服务器发送这样的请求，就要留心了。
+
+此时，params[:ids] 的值是 ["1", "2", "3"]。注意，参数的值始终是字符串，Rails 不会尝试转换类型。
+
+- ### 强制使用 HTTPS 协议
+
+有时，基于安全考虑，可能希望某个控制器只能通过 HTTPS 协议访问。为了达到这一目的，可以在控制器中使用 force_ssl 方法：
+
+class DinnerController
+  force_ssl
+end
+与过滤器类似，也可指定 :only 或 :except 选项，设置只在某些动作上强制使用 HTTPS：
+
+class DinnerController
+  force_ssl only: :cheeseburger
+  或者
+  force_ssl except: :cheeseburger
+end
+注意，如果你在很多控制器中都使用了 force_ssl，或许你想让整个应用都使用 HTTPS。此时，你可以在环境配置文件中设定 config.force_ssl 选项。
+
+- ### 指定Controller的Layout
+
+class EventsController < ApplicationController
+   layout "special"
+end
+这样就会指定Events Controller下的Views都使用app/views/layouts/special.html.erb这个Layout，你可以加上参数:only或:except表示只有特定的Action：
+
+class EventsController < ApplicationController
+   layout "special", :only => :index
+end
+或是
+
+class EventsController < ApplicationController
+   layout "special", :except => [:show, :edit, :new]
+end
+请注意到使用字串和Symbol是不同的。使用Symbol的话，它会透过一个同名的方法来动态决定，例如以下的Layout是透过determine_layout这个方法来决定：
+
+class EventsController < ApplicationController
+   layout :determine_layout
+
+	private
+
+	def determine_layout
+   	   ( rand(100)%2 == 0 )? "event_open" : "event_closed"
+	end
+end
+除了在Controller层级设定Layout，我们也可以设定个别的Action使用不同的Layout，例如:
+
+def show
+   @event = Event.find(params[:id])
+	render :layout => "foobar"
+end
+这样show Action的样板就会套用foobar Layout。更常见的情形是关掉Layout，这时候我们可以写render :layout => false。
+
 ## 3. 模型
+
+- ### Model 命名
+
+类别名称使用大写、单数，没有底线。而档名使用小写、单数，用底线。数据库表格名称用小写且为复数。例如：
+
+数据库表格 line_items
+档名 app/models/line_item.rb
+类别名称 LineItem
 
 - ### 自订资料表名称或主键字段
 
@@ -264,7 +360,119 @@ end
  => {:sex => "male", :url => "http://example.com", :food => "pizza"}
 ```
 
+- ### enum 宏
+
+enum 宏把整数字段映射为一组可能的值。
+
+class Book < ApplicationRecord
+  enum availability: [:available, :unavailable]
+end
+上面的代码会自动创建用于查询模型的对应作用域，同时会添加用于转换状态和查询当前状态的方法。
+
+下面的示例只查询可用的图书
+Book.available
+或
+Book.where(availability: :available)
+
+book = Book.new(availability: :available)
+book.available?   # => true
+book.unavailable! # => true
+book.available?   # => false
+
+- ### inverse_of
+
+Active Record 提供了 :inverse_of 选项，可以通过它明确声明双向关联：
+
+class Author < ApplicationRecord
+  has_many :books, inverse_of: 'writer'
+end
+
+class Book < ApplicationRecord
+  belongs_to :writer, class_name: 'Author', foreign_key: 'author_id'
+end
+在 has_many 声明中指定 :inverse_of 选项后，Active Record 便能识别双向关联：
+
+a = Author.first
+b = a.books.first
+a.first_name == b.writer.first_name # => true
+a.first_name = 'David'
+a.first_name == b.writer.first_name # => true
+inverse_of 有些限制：
+
+不支持 :through 关联；
+不支持 :polymorphic 关联；
+不支持 :as 选项；
+
+- ### Scopes 作用域
+
+Model Scopes是一项非常酷的功能，它可以将常用的查询条件宣告起来，让程式变得干净易读，更厉害的是可以串接使用。例如，我们编辑app/models/event.rb，加上两个Scopes：
+
+class Event < ApplicationRecord
+    scope :open_public, -> { where( :is_public => true ) }
+    scope :recent_three_days, -> { where(["created_at > ? ", Time.now - 3.days ]) }
+end
+
+> Event.create( :name => "public event", :is_public => true )
+> Event.create( :name => "private event", :is_public => false )
+> Event.create( :name => "private event", :is_public => true )
+
+> Event.open_public
+> Event.open_public.recent_three_days
+-> {...}是Ruby语法，等同于Proc.new{...}或lambda{...}，用来建立一个匿名方法物件
+
+串接的顺序没有影响的，都会一并套用。我们也可以串接在has_many关联后：
+
+> user.events.open_public.recent_three_days
+接着，我们可以设定一个默认的Scope，通常会拿来设定排序：
+
+class Event < ApplicationRecord
+    default_scope -> { order('id DESC') }
+end
+unscoped方法可以暂时取消默认的default_scope：
+
+Event.unscoped do
+    Event.all
+    # SELECT * FROM events
+end
+最后，Scope也可以接受参数，例如：
+
+class Event < ApplicationRecord
+    scope :recent, ->(date) { where("created_at > ?", date) }
+
+    # 等同于 scope :recent, lambda{ |date| where(["created_at > ? ", date ]) }
+    # 或 scope :recent, Proc.new{ |t| where(["created_at > ? ", t ]) }
+end
+
+Event.recent( Time.now - 7.days )
+不过，笔者会推荐上述这种带有参数的Scope，改成如下的类别方法，可以比较明确看清楚参数是什么，特别是你想给默认值的时候：
+
+class Event < ApplicationRecord
+    def self.recent(t=Time.now)
+        where(["created_at > ? ", t ])
+    end
+end
+
+Event.recent( Time.now - 7.days )
+这样的效果是一样的，也是一样可以和其他Scope做串接。
+
+all方法可以将Model转成可以串接的形式，方便依照参数组合出不同查询，例如
+
+fruits = Fruit.all
+fruits = fruits.where(:colour => 'red') if options[:red_only]
+fruits = fruits.limit(10) if limited?
+可以呼叫to_sql方法观察实际ORM转出来的SQL，例如Event.open_public.recent_three_days.to_sql
+
+有一点需要特别注意，default_scope 总是在所有 scope 和 where 之前起作用。
+
 ## 4. 视图
+
+- ### View 命名
+
+例如一个叫做 People 的 controller，其中的 index action：
+
+档名 app/views/people/index.html.erb
+Helper 名称 module PeopleHelper
+档名 app/helpers/people_helper.rb
 
 - ### 自定Layout内容
 
@@ -308,6 +516,30 @@ end
 
 使用collection的好处不只是少打字而已，还有执行效能上的大大改善，Rails内部会针对这种形式做执行效率最佳化。
 
+- ### content_for 方法
+
+content_for 方法以块的方式把模板内容保存在标识符中，然后我们可以在模板或布局中把这个标识符传递给 yield 方法作为参数来调用所保存的内容。
+
+假如应用拥有标准布局，同时拥有一个特殊页面，这个特殊页面需要包含其他页面都不需要的 JavaScript 脚本。为此我们可以在这个特殊页面中使用 content_for 方法来包含所需的 JavaScript 脚本，而不必增加其他页面的体积。
+
+app/views/layouts/application.html.erb
+
+<html>
+  <head>
+    <title>Welcome!</title>
+    <%= yield :special_script %>
+  </head>
+  <body>
+    <p>Welcome! The date and time is <%= Time.now %></p>
+  </body>
+</html>
+app/views/articles/special.html.erb
+
+<p>This is a special page.</p>
+ 
+<% content_for :special_script do %>
+  <script>alert('Hello!')</script>
+<% end %>
 
 ## 5. Turbolinks
 
