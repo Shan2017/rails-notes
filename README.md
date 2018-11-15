@@ -286,6 +286,83 @@ end
 档名 app/models/line_item.rb
 类别名称 LineItem
 
+- ### 自定义验证
+如果内置的数据验证辅助方法无法满足需求，可以选择自己定义验证使用的类或方法。
+
+##### 1 自定义验证类
+自定义的验证类继承自 ActiveModel::Validator，必须实现 validate 方法，其参数是要验证的记录，然后验证这个记录是否有效。自定义的验证类通过 validates_with 方法调用。
+
+```
+class MyValidator < ActiveModel::Validator
+  def validate(record)
+    unless record.name.starts_with? 'X'
+      record.errors[:name] << 'Need a name starting with X please!'
+    end
+  end
+end
+
+class Person
+  include ActiveModel::Validations
+  validates_with MyValidator
+end
+```
+
+在自定义的验证类中验证单个属性，最简单的方法是继承 ActiveModel::EachValidator 类。此时，自定义的验证类必须实现 validate_each 方法。这个方法接受三个参数：记录、属性名和属性值。它们分别对应模型实例、要验证的属性及其值。
+
+```
+class EmailValidator < ActiveModel::EachValidator
+  def validate_each(record, attribute, value)
+    unless value =~ /\A([^@\s]+)@((?:[-a-z0-9]+\.)+[a-z]{2,})\z/i
+      record.errors[attribute] << (options[:message] || "is not an email")
+    end
+  end
+end
+
+class Person < ApplicationRecord
+  validates :email, presence: true, email: true
+end
+```
+
+如上面的代码所示，可以同时使用内置的验证方法和自定义的验证类。
+
+##### 2 自定义验证方法
+你还可以自定义方法，验证模型的状态，如果验证失败，向 erros 集合添加错误消息。验证方法必须使用类方法 validate（API）注册，传入自定义验证方法名的符号形式。
+
+这个类方法可以接受多个符号，自定义的验证方法会按照注册的顺序执行。
+
+valid? 方法会验证错误集合是否为空，因此若想让验证失败，自定义的验证方法要把错误添加到那个集合中。
+
+```
+class Invoice < ApplicationRecord
+  validate :expiration_date_cannot_be_in_the_past,
+    :discount_cannot_be_greater_than_total_value
+
+  def expiration_date_cannot_be_in_the_past
+    if expiration_date.present? && expiration_date < Date.today
+      errors.add(:expiration_date, "can't be in the past")
+    end
+  end
+
+  def discount_cannot_be_greater_than_total_value
+    if discount > total_value
+      errors.add(:discount, "can't be greater than total value")
+    end
+  end
+end
+```
+
+默认情况下，每次调用 valid? 方法或保存对象时都会执行自定义的验证方法。不过，使用 validate方法注册自定义验证方法时可以设置 :on 选项，指定什么时候验证。:on 的可选值为 :create 和 :update。
+
+```
+class Invoice < ApplicationRecord
+  validate :active_customer, on: :create
+
+  def active_customer
+    errors.add(:customer_id, "is not active") unless customer.active?
+  end
+end
+```
+
 - ### 自订资料表名称或主键字段
 
 资料表的名称默认就是Model类别名称的复数小写，例如Event的资料表是events、EventCategory的资料表是event_categories。不过英文博大精深，Rails转出来的复数不一定是正确的英文单字，这时候你可以修改config/initializers/inflections.rb进行订正。
@@ -297,26 +374,6 @@ class Category < ApplicationRecord
   self.primary_key = "your_primary_key_name"
 end
 ```
-
-- ### 如何自定 validation？
-
-使用 validate 方法传入一个同名方法的 Symbol 即可。
-```
-validate :my_validation
-
-private
-
-def my_validation
-    if name =~ /foo/
-        errors.add(:name, "can not be foo")
-    elsif name =~ /bar/
-        errors.add(:name, "can not be bar")
-    elsif name == 'xxx'
-        errors.add(:base, "can not be xxx")
-    end
-end
-```
-在你的验证方法之中，你会使用到 errors 来将错误讯息放进去，如果这个错误是因为某一属性造成，我们就用那个属性当做 errors 的 key，例如本例的 :name。如果原因不特别属于某一个属性，照惯例会用 :base。
 
 - ### 序列化Serialize
 
